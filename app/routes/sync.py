@@ -11,8 +11,8 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import select, update
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from sqlalchemy import select, update, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -185,8 +185,6 @@ async def list_devices(db: AsyncSession = Depends(get_db)):
 @router.get("/stats")
 async def sync_stats(db: AsyncSession = Depends(get_db)):
     """Overall sync statistics."""
-    from sqlalchemy import func
-
     total_readings = (
         await db.execute(select(func.count(VitalReading.id)))
     ).scalar() or 0
@@ -204,3 +202,88 @@ async def sync_stats(db: AsyncSession = Depends(get_db)):
         "total_devices": total_devices,
         "total_syncs": total_syncs,
     }
+
+
+# ── Data Browsing Endpoints ────────────────────────────────────────────────
+
+
+@router.get("/readings")
+async def list_readings(
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(50, ge=1, le=200, description="Items per page"),
+    device_id: str | None = Query(None, description="Filter by device ID"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Browse all synced vital readings (paginated)."""
+    query = select(VitalReading)
+
+    if device_id:
+        query = query.where(VitalReading.device_id == device_id)
+
+    # Total count
+    count_q = select(func.count()).select_from(query.subquery())
+    total = (await db.execute(count_q)).scalar() or 0
+
+    # Paginated results
+    query = query.order_by(desc(VitalReading.timestamp))
+    query = query.offset((page - 1) * page_size).limit(page_size)
+    result = await db.execute(query)
+    items = result.scalars().all()
+
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "pages": max(1, -(-total // page_size)),
+        "readings": [
+            {
+                "id": r.id,
+                "device_id": r.device_id,
+                "edge_uuid": r.edge_uuid,
+                "timestamp": r.timestamp.isoformat() if r.timestamp else None,
+                "received_at": r.received_at.isoformat() if r.received_at else None,
+                "heart_rate": r.heart_rate,
+                "spo2": r.spo2,
+                "temperature": r.temperature,
+                "blood_pressure_sys": r.blood_pressure_sys,
+                "blood_pressure_dia": r.blood_pressure_dia,
+                "respiratory_rate": r.respiratory_rate,
+            }
+            for r in items
+        ],
+    }
+
+
+@router.get("/logs")
+async def list_sync_logs(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+):
+    """Browse the sync audit log – see when each device synced."""
+    query = select(SyncLog).order_by(desc(SyncLog.timestamp))
+
+    count_q = select(func.count()).select_from(query.subquery())
+    total = (await db.execute(count_q)).scalar() or 0
+
+    query = query.offset((page - 1) * page_size).limit(page_size)
+    result = await db.execute(query)
+    items = result.scalars().all()
+
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "logs": [
+            {
+                "id": l.id,
+                "device_id": l.device_id,
+                "timestamp": l.timestamp.isoformat() if l.timestamp else None,
+                "records_received": l.records_received,
+                "status": l.status,
+                "error_message": l.error_message,
+            }
+            for l in items
+        ],
+    }
+
