@@ -1,0 +1,25 @@
+# Render Blueprint – auto-configure services on Render
+# https://render.com/docs/blueprint-spec
+
+databases:
+  - name: healthguard-central-db
+    plan: free
+    databaseName: healthguard_central
+
+services:
+  - type: web
+    name: healthguard-central
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: healthguard-central-db
+          property: connectionString
+      - key: ALLOWED_API_KEYS
+        sync: false  # You set this manually in the dashboard
+      - key: PYTHON_VERSION
+        value: 3.11.6
